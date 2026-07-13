@@ -92,13 +92,20 @@ class GlowProgressBarView @JvmOverloads constructor(
         val barH = height * 0.4f
         val barTop = height - barH
         barRect.set(0f, barTop, width.toFloat(), barTop + barH)
+        val fillW = barRect.width() * progress / 100f
 
         // نص الحالة + النسبة فوق الشريط
         val labelY = barTop - 18f
         statusPaint.color = if (progress >= 100) completeColor else accentColor
         canvas.drawText(statusText, 0f, labelY, statusPaint)
+
+        // النسبة بتمشي فوق حافة الجزء المعبّى من الشريط بدل ما تفضل ثابتة يمين الشريط
         pctPaint.color = if (progress >= 100) completeColor else accentColor
-        canvas.drawText("$progress%", width.toFloat(), labelY, pctPaint)
+        val minX = 24f
+        val maxX = width - 4f
+        val pctX = fillW.coerceIn(minX, maxX)
+        pctPaint.textAlign = if (pctX >= maxX - 6f) Paint.Align.RIGHT else Paint.Align.CENTER
+        canvas.drawText("$progress%", pctX, labelY, pctPaint)
 
         // خلفية الشريط
         val c = accentColor
@@ -106,7 +113,6 @@ class GlowProgressBarView @JvmOverloads constructor(
         canvas.drawRoundRect(barRect, barH / 2f, barH / 2f, trackPaint)
 
         if (progress <= 0) return
-        val fillW = barRect.width() * progress / 100f
         val fillRect = RectF(0f, barTop, fillW, barTop + barH)
         canvas.drawRoundRect(fillRect, barH / 2f, barH / 2f, fillPaint)
 
