@@ -4,17 +4,19 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PathMeasure
 import android.graphics.Typeface
 import android.util.AttributeSet
 import android.view.View
-import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.random.Random
 
 /**
- * نص بيتحرق حرف حرف بشعاع ليزر متحرك (مع شرر بيتطاير من كل حرف) — نسخة أندرويد
- * من نفس تأثير الـ HTML preview اللي اشتغل عليه المستخدم برّه التطبيق.
+ * نص بيتحرق بشعاع ليزر بيرسم (يحفر) شكل كل حرف بنفسه — حرف حرف — بدل ما يظهر
+ * الحرف فجأة. الشعاع بيتبع تمامًا خطوط رسم الحرف (outline) باستخدام PathMeasure،
+ * فبيبان وكأنه بيحفر الحرف فعليًا زي ماكينة ليزر حقيقية، مش مجرد Fade-in.
  * بتتغذى بـ update() من حلقة الرندر الخارجية في SplashActivity زي باقي عناصر
  * الـ Splash (WireframeSplashView / RingView) عشان تفضل كل الأنيميشن متزامنة.
  */
@@ -34,7 +36,7 @@ class LaserTextView @JvmOverloads constructor(
         set(value) {
             field = value
             burnedPaint.color = value
-            laserPaint.color = value
+            traceStrokePaint.color = value
             sparkPaint.color = value
         }
 
@@ -42,7 +44,17 @@ class LaserTextView @JvmOverloads constructor(
     var isBurnComplete: Boolean = false
         private set
 
-    private class Ch(val c: Char, val x: Float, var burned: Boolean = false, var glow: Float = 0f)
+    /** حرف واحد بكل بياناته: مكانه، شكل حفره (path)، وطول كل contour فيه (بعض
+     * الحروف زي D/R/A/P عندها أكتر من contour — الإطار الخارجي + الفتحة الداخلية) */
+    private class Ch(val c: Char, val x: Float) {
+        var burned = false
+        var glow = 0f
+        val path = Path()
+        var contourLengths: List<Float> = emptyList()
+        var totalLength = 0f
+        var traceLen = 0f
+    }
+
     private class Spark(var x: Float, var y: Float, var vx: Float, var vy: Float, var alpha: Float = 1f)
 
     private val basePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -55,10 +67,14 @@ class LaserTextView @JvmOverloads constructor(
         color = accentColor
         setShadowLayer(28f, 0f, 0f, accentColor)
     }
-    private val laserPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    /** الخط اللي بيترسم تدريجيًا فوق شكل الحرف وهو بيتحفر */
+    private val traceStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 3.5f
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
         color = accentColor
-        strokeWidth = 5f
-        setShadowLayer(20f, 0f, 0f, accentColor)
+        setShadowLayer(18f, 0f, 0f, accentColor)
     }
     private val laserDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
     private val sparkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accentColor }
@@ -70,23 +86,37 @@ class LaserTextView @JvmOverloads constructor(
     private var laserY = 0f
     private var textBaselineY = 0f
     private val sparks = mutableListOf<Spark>()
+    private val traceScratch = Path()
+
+    /** سرعة الحفر — بكسل من طول الخط في الفريم الواحد، متناسبة مع كثافة الشاشة */
+    private val traceSpeedPerFrame = 9f * context.resources.displayMetrics.density
 
     private fun buildChars() {
         if (width <= 0 || height <= 0) return
         val cx = width / 2f
         val total = basePaint.measureText(text)
         val startX = cx - total / 2f
+        textBaselineY = height * 0.62f
+
         val list = ArrayList<Ch>(text.length)
         for (i in text.indices) {
             val xBefore = basePaint.measureText(text, 0, i)
-            list.add(Ch(text[i], startX + xBefore))
+            val ch = Ch(text[i], startX + xBefore)
+            if (!text[i].isWhitespace()) {
+                basePaint.getTextPath(text[i].toString(), 0, 1, ch.x, textBaselineY, ch.path)
+                val lens = mutableListOf<Float>()
+                val measure = PathMeasure(ch.path, false)
+                do { lens.add(measure.length) } while (measure.nextContour())
+                ch.contourLengths = lens
+                ch.totalLength = lens.sum()
+            }
+            list.add(ch)
         }
         chars = list
         charsBuilt = true
         currentIndex = 0
-        laserX = 0f
-        laserY = 0f
-        textBaselineY = height * 0.62f
+        laserX = startX
+        laserY = textBaselineY
         isBurnComplete = false
         sparks.clear()
     }
@@ -104,16 +134,26 @@ class LaserTextView @JvmOverloads constructor(
         }
         if (currentIndex < chars.size) {
             val target = chars[currentIndex]
-            val targetX = target.x
-            val targetY = textBaselineY
-            if (currentIndex == 0 && laserX == 0f) laserX = target.x
-            laserX += (targetX - laserX) * 0.22f
-            laserY += (targetY - laserY) * 0.22f
-            if (abs(laserX - targetX) < 8f) {
+            if (target.totalLength <= 0f) {
+                // مسافة (space) أو حرف من غير شكل مرئي — يتخطّى فورًا من غير حفر
                 target.burned = true
                 target.glow = 1f
-                repeat(6) { spawnSpark(laserX, textBaselineY) }
                 currentIndex++
+            } else {
+                target.traceLen += traceSpeedPerFrame
+                val headPos = headPosition(target.path, target.contourLengths, target.traceLen.coerceAtMost(target.totalLength))
+                laserX = headPos[0]
+                laserY = headPos[1]
+
+                if (target.traceLen >= target.totalLength) {
+                    target.traceLen = target.totalLength
+                    target.burned = true
+                    target.glow = 1f
+                    repeat(8) { spawnSpark(laserX, laserY) }
+                    currentIndex++
+                } else if (Random.nextInt(3) == 0) {
+                    spawnSpark(laserX, laserY) // شرر خفيف أثناء الحفر نفسه، مش بس في الآخر
+                }
             }
         } else if (!isBurnComplete) {
             laserY += (-150f - laserY) * 0.12f
@@ -139,6 +179,46 @@ class LaserTextView @JvmOverloads constructor(
         sparks.add(Spark(x, y, cos(angle) * speed, sin(angle) * speed - 1f))
     }
 
+    /** بيرجّع نقطة رأس الليزر (x,y) على شكل الحرف نفسه عند طول معيّن من بداية الحفر */
+    private fun headPosition(path: Path, contourLengths: List<Float>, targetLen: Float): FloatArray {
+        val pos = FloatArray(2)
+        val tan = FloatArray(2)
+        if (contourLengths.isEmpty()) return pos
+        val measure = PathMeasure(path, false)
+        var cumulative = 0f
+        for ((idx, len) in contourLengths.withIndex()) {
+            val isLast = idx == contourLengths.lastIndex
+            if (targetLen <= cumulative + len || isLast) {
+                val localTarget = (targetLen - cumulative).coerceIn(0f, len)
+                measure.getPosTan(localTarget, pos, tan)
+                return pos
+            }
+            cumulative += len
+            if (!measure.nextContour()) break
+        }
+        return pos
+    }
+
+    /** بيبني شكل جزء الحرف اللي اتحفر لحد دلوقتي (من أول الحرف لحد طول معيّن) */
+    private fun tracePathUpTo(path: Path, contourLengths: List<Float>, targetLen: Float, outPath: Path) {
+        outPath.reset()
+        if (contourLengths.isEmpty() || targetLen <= 0f) return
+        val measure = PathMeasure(path, false)
+        var cumulative = 0f
+        val seg = Path()
+        for (len in contourLengths) {
+            if (targetLen <= cumulative) break
+            val localTarget = (targetLen - cumulative).coerceAtMost(len)
+            if (localTarget > 0f) {
+                seg.reset()
+                measure.getSegment(0f, localTarget, seg, true)
+                outPath.addPath(seg)
+            }
+            cumulative += len
+            if (!measure.nextContour()) break
+        }
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (!charsBuilt) {
@@ -146,12 +226,17 @@ class LaserTextView @JvmOverloads constructor(
             if (!charsBuilt) return
         }
 
-        for (c in chars) {
+        for ((idx, c) in chars.withIndex()) {
             if (c.burned) {
                 burnedPaint.setShadowLayer(28f + c.glow * 20f, 0f, 0f, accentColor)
                 canvas.drawText(c.c.toString(), c.x, textBaselineY, burnedPaint)
             } else {
+                // شكل الحرف "الخام" لسه ملموش الليزر — بيبان غامق زي المادة قبل الحفر
                 canvas.drawText(c.c.toString(), c.x, textBaselineY, unburnedPaint)
+                if (idx == currentIndex && c.totalLength > 0f) {
+                    tracePathUpTo(c.path, c.contourLengths, c.traceLen, traceScratch)
+                    canvas.drawPath(traceScratch, traceStrokePaint)
+                }
             }
         }
 
@@ -161,8 +246,7 @@ class LaserTextView @JvmOverloads constructor(
         }
 
         if (!isBurnComplete) {
-            canvas.drawLine(laserX, 0f, laserX, laserY, laserPaint)
-            canvas.drawCircle(laserX, laserY, 7f, laserDotPaint.apply {
+            canvas.drawCircle(laserX, laserY, 6f, laserDotPaint.apply {
                 setShadowLayer(20f, 0f, 0f, accentColor)
             })
         }
