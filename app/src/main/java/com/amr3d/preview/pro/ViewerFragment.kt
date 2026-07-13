@@ -35,6 +35,7 @@ class ViewerFragment : Fragment() {
     private lateinit var btnMeasureTool: ToggleButton
     private lateinit var btnInspect: Button
     private lateinit var btnResetView: Button
+    private lateinit var btnGridFloor: ToggleButton
     private lateinit var btnWireframe: ToggleButton
     private lateinit var btnMaterial: Button
     private lateinit var btnUnit: Button
@@ -60,6 +61,7 @@ class ViewerFragment : Fragment() {
     private lateinit var loadingText: TextView
 
     private var currentModel: STLModel? = null
+    private var currentModelFileSizeBytes: Long = -1L
     private var is2DMode = false
     private var measureModeOn = false
     private var currentUnit = MeasurementUnit.MM
@@ -153,6 +155,7 @@ class ViewerFragment : Fragment() {
         btnMeasureTool      = v.findViewById(R.id.btnMeasureTool)
         btnInspect          = v.findViewById(R.id.btnInspect)
         btnResetView        = v.findViewById(R.id.btnResetView)
+        btnGridFloor        = v.findViewById(R.id.btnGridFloor)
         btnWireframe        = v.findViewById(R.id.btnWireframe)
         btnMaterial         = v.findViewById(R.id.btnMaterial)
         btnUnit             = v.findViewById(R.id.btnUnit)
@@ -272,6 +275,10 @@ class ViewerFragment : Fragment() {
         btnResetView.setOnClickListener  { animBtn(it); if (is2DMode) dxf2DView.resetView() else resetCamera() }
         btnWhatsapp.setOnClickListener   { animBtn(it); openWhatsapp() }
 
+        btnGridFloor.setOnCheckedChangeListener { btn, c ->
+            animBtn(btn); glViewerView.stlRenderer.showGridFloor = c
+        }
+
         btnWireframe.setOnCheckedChangeListener { btn, c ->
             animBtn(btn); glViewerView.stlRenderer.wireframeMode = c
         }
@@ -312,9 +319,9 @@ class ViewerFragment : Fragment() {
         btnViewTop.setOnClickListener    { jumpToView(89f, 0f);    hideDirections() }
         btnViewBottom.setOnClickListener { jumpToView(-89f, 0f);   hideDirections() }
 
-        glViewerView.onSingleTap = { x, y -> if (measureModeOn) handleMeasurementTap(x, y) }
+        glViewerView.onSingleTap = { x, y -> if (measureModeOn) handleMeasurementTap(x, y) else handleViewerTap(x, y) }
 
-        inspectionCard.setOnClickListener  { inspectionCard.visibility = View.GONE }
+        inspectionCard.setOnClickListener  { cancelInfoAutoHide(); inspectionCard.visibility = View.GONE }
         measurementCard.setOnClickListener {
             measurementCard.visibility = View.GONE
             glViewerView.stlRenderer.clearMeasurementPoints()
@@ -367,6 +374,20 @@ class ViewerFragment : Fragment() {
         return fileName.substringAfterLast('.', "").lowercase()
     }
 
+    /** حجم الملف الحقيقي بالبايت (لعرضه في لوحة المعلومات) — بيرجع -1 لو تعذر تحديده */
+    private fun getFileSizeBytes(uri: Uri): Long {
+        return try {
+            requireContext().contentResolver.query(
+                uri, arrayOf(android.provider.OpenableColumns.SIZE), null, null, null
+            )?.use { c ->
+                if (c.moveToFirst()) {
+                    val idx = c.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                    if (idx >= 0 && !c.isNull(idx)) c.getLong(idx) else -1L
+                } else -1L
+            } ?: -1L
+        } catch (_: Exception) { -1L }
+    }
+
     /** مسار تحميل ملفات STL — العارض ثلاثي الأبعاد (زي ما كان) */
     private fun loadStlFile(uri: Uri) {
         switchTo3DMode()
@@ -392,6 +413,7 @@ class ViewerFragment : Fragment() {
                 hideLoadingBar()
 
                 currentModel = model
+                currentModelFileSizeBytes = getFileSizeBytes(uri)
 
                 // رفع الموديل على GL thread
                 glViewerView.queueEvent {
@@ -405,6 +427,7 @@ class ViewerFragment : Fragment() {
                     measurementCard.visibility = View.GONE
                     btnMeasureTool.isChecked   = false
                     btnWireframe.isChecked     = false
+                    btnGridFloor.isChecked     = false
                     directionsPanel.visibility = View.GONE
                 }
 
@@ -412,6 +435,10 @@ class ViewerFragment : Fragment() {
                 saveToHistory(uri)
 
                 Toast.makeText(context, getString(R.string.toast_triangle_count, model.triangleCount), Toast.LENGTH_SHORT).show()
+
+                // لوحة المعلومات (الأبعاد/حجم الملف/عدد المثلثات) — تظهر تلقائي 3 ثواني بالظبط
+                // وبعدها تختفي لوحدها، تماماً زي ما حصل مع نفس الموديل أثناء اللودينج
+                showModelInfoBriefly(model)
 
             } catch (e: SecurityException) {
                 if (!isAdded || view == null) return@launch
@@ -585,6 +612,7 @@ class ViewerFragment : Fragment() {
         val r = glViewerView.stlRenderer
         r.rotationX = -25f; r.rotationY = 35f
         r.scaleFactor = 1f; r.panX = 0f; r.panY = 0f
+        r.pivotOverride = null
         glViewerView.queueEvent { r.updateProjection() }
     }
 
@@ -610,7 +638,11 @@ class ViewerFragment : Fragment() {
             floatArrayOf(0.22f,0.24f,0.27f), floatArrayOf(0.92f,0.92f,0.92f),
             floatArrayOf(0.05f,0.08f,0.18f)
         )
-        val bgNames  = listOf("داكن","أسود","رمادي","أبيض","كحلي")
+        val bgNames  = listOf(
+            getString(R.string.bg_name_dark), getString(R.string.bg_name_black),
+            getString(R.string.bg_name_gray), getString(R.string.bg_name_white),
+            getString(R.string.bg_name_navy)
+        )
         val bgHex    = listOf("#1A1D24","#050607","#3A3D44","#EEEEF0","#0D1530")
 
         val dialog = android.app.Dialog(ctx)
@@ -627,7 +659,7 @@ class ViewerFragment : Fragment() {
 
         // عنوان
         root.addView(TextView(ctx).apply {
-            text = "🎨  اختر الخامة"
+            text = getString(R.string.dialog_choose_material)
             textSize = 17f
             setTextColor(0xFFFF8A1E.toInt())
             typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -704,12 +736,12 @@ class ViewerFragment : Fragment() {
             ball.layoutParams = LinearLayout.LayoutParams(size, size)
             ball.setOnClickListener {
                 glViewerView.stlRenderer.setMaterial(mat)
-                Toast.makeText(ctx, mat.nameAr, Toast.LENGTH_SHORT).show()
+                Toast.makeText(ctx, mat.localizedName(ctx), Toast.LENGTH_SHORT).show()
                 dialog.dismiss()
             }
 
             val name = TextView(ctx).apply {
-                text = mat.nameAr; textSize = 10f
+                text = mat.localizedName(ctx); textSize = 10f
                 setTextColor(0xFFBBBBBB.toInt())
                 gravity = android.view.Gravity.CENTER
                 setPadding(0, 4, 0, 0)
@@ -737,7 +769,7 @@ class ViewerFragment : Fragment() {
             setBackgroundColor(0xFF2A2E38.toInt())
         })
         root.addView(TextView(ctx).apply {
-            text = "الخلفية"; textSize = 12f
+            text = getString(R.string.dialog_background_label); textSize = 12f
             setTextColor(0xFF666666.toInt()); setPadding(0,0,0,10)
         })
 
@@ -889,15 +921,68 @@ class ViewerFragment : Fragment() {
         measurementCard.visibility = View.VISIBLE
     }
 
-    private fun showInspectionReport(model: STLModel) {
-        if (inspectionCard.visibility == View.VISIBLE) { inspectionCard.visibility = View.GONE; return }
+    private var infoAutoHideRunnable: Runnable? = null
+
+    private fun buildModelInfoText(model: STLModel): String {
         val report = MeasurementTools.inspect(model, currentUnit)
         val u = report.unit.label
-        inspectionText.text = getString(R.string.inspection_report_header) + "\n" +
+        val sizeText = if (currentModelFileSizeBytes >= 0) {
+            getString(R.string.filesize_mb_format, currentModelFileSizeBytes / (1024.0 * 1024.0))
+        } else "—"
+        return getString(R.string.inspection_report_header) + "\n" +
             getString(R.string.inspection_width_label, "%.2f".format(report.width), u) + "\n" +
             getString(R.string.inspection_depth_label, "%.2f".format(report.depth), u) + "\n" +
-            getString(R.string.inspection_height_label, "%.2f".format(report.height), u)
+            getString(R.string.inspection_height_label, "%.2f".format(report.height), u) + "\n" +
+            getString(R.string.inspection_filesize_label, sizeText) + "\n" +
+            getString(R.string.inspection_triangles_label, model.triangleCount)
+    }
+
+    private fun showInspectionReport(model: STLModel) {
+        if (inspectionCard.visibility == View.VISIBLE) { inspectionCard.visibility = View.GONE; return }
+        cancelInfoAutoHide()
+        inspectionCard.alpha = 1f
+        inspectionText.text = buildModelInfoText(model)
         inspectionCard.visibility  = View.VISIBLE
         measurementCard.visibility = View.GONE
+    }
+
+    /** بتتنادى بعد نجاح تحميل موديل جديد — بتوري لوحة المعلومات تلقائياً لمدة 3 ثواني
+     * بالظبط وبعدها تختفي (fade out) لوحدها، من غير ما المستخدم يحتاج يدوس على حاجة. */
+    private fun showModelInfoBriefly(model: STLModel) {
+        cancelInfoAutoHide()
+        inspectionCard.alpha = 1f
+        inspectionText.text = buildModelInfoText(model)
+        inspectionCard.visibility = View.VISIBLE
+        measurementCard.visibility = View.GONE
+        val runnable = Runnable {
+            inspectionCard.animate().alpha(0f).setDuration(400)
+                .withEndAction { inspectionCard.visibility = View.GONE; inspectionCard.alpha = 1f }
+                .start()
+        }
+        infoAutoHideRunnable = runnable
+        inspectionCard.postDelayed(runnable, 3000L)
+    }
+
+    private fun cancelInfoAutoHide() {
+        infoAutoHideRunnable?.let { inspectionCard.removeCallbacks(it) }
+        infoAutoHideRunnable = null
+        inspectionCard.animate().cancel()
+    }
+
+    /** تاب على أي مكان في شاشة العارض (خارج وضع القياس): يخفي لوحة المعلومات لو ظاهرة،
+     * وكمان يحدّد مركز دوران جديد (Pivot) عند نقطة اللمسة على سطح الموديل — الحاجتين
+     * مع بعض من غير تعارض، زي ما هو مطلوب. */
+    private fun handleViewerTap(screenX: Float, screenY: Float) {
+        if (inspectionCard.visibility == View.VISIBLE) {
+            cancelInfoAutoHide()
+            inspectionCard.visibility = View.GONE
+        }
+        val model = currentModel ?: return
+        val r = glViewerView.stlRenderer
+        val ray = RayPicker.screenPointToRay(screenX, screenY,
+            r.getSurfaceWidth(), r.getSurfaceHeight(),
+            r.getCurrentModelMatrix(), r.getCurrentViewMatrix(), r.getCurrentProjectionMatrix())
+        val hit = RayPicker.findClosestIntersection(ray, model) ?: return
+        r.pivotOverride = hit
     }
 }
