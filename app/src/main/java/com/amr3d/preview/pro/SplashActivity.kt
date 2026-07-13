@@ -80,7 +80,12 @@ class SplashActivity : AppCompatActivity() {
 
         // اخفاء كل العناصر في البداية
         listOf(logoImg, titleText, subText, progressBar).forEach { it.alpha = 0f }
-        logoImg.scaleX = 0.4f; logoImg.scaleY = 0.4f
+        // اللوجو بيبدأ صغير جدًا ومايل في الفضاء (زي إنه جاي من بعيد) عشان يدخل
+        // بإحساس "3D انترو" لما يتحرك ويثبت في مكانه بدل ما يظهر بتكبير بسيط بس
+        logoImg.scaleX = 0.05f; logoImg.scaleY = 0.05f
+        logoImg.rotationX = 55f
+        logoImg.rotationY = -40f
+        logoImg.cameraDistance = 14000f * resources.displayMetrics.density
 
         // لمس الشاشة يؤثر على الـ Wireframe
         window.decorView.setOnTouchListener { _, e ->
@@ -107,15 +112,17 @@ class SplashActivity : AppCompatActivity() {
     }
 
     private fun startSplashSequence() {
-        // اللوجو يظهر من العدم بعد 300ms
+        // اللوجو يظهر من العدم بعد 300ms — بيدخل من بعيد ومايل (3D) وبعدين يثبت مسطّح
         handler.postDelayed({
             AnimatorSet().apply {
                 playTogether(
-                    ObjectAnimator.ofFloat(logoImg, "alpha", 0f, 1f).setDuration(1000),
-                    ObjectAnimator.ofFloat(logoImg, "scaleX", 0.4f, 1.08f, 1f).setDuration(1000),
-                    ObjectAnimator.ofFloat(logoImg, "scaleY", 0.4f, 1.08f, 1f).setDuration(1000)
+                    ObjectAnimator.ofFloat(logoImg, "alpha", 0f, 1f).setDuration(900),
+                    ObjectAnimator.ofFloat(logoImg, "scaleX", 0.05f, 1.15f, 1f).setDuration(1100),
+                    ObjectAnimator.ofFloat(logoImg, "scaleY", 0.05f, 1.15f, 1f).setDuration(1100),
+                    ObjectAnimator.ofFloat(logoImg, "rotationX", 55f, 0f).setDuration(1100),
+                    ObjectAnimator.ofFloat(logoImg, "rotationY", -40f, 0f).setDuration(1100)
                 )
-                interpolator = DecelerateInterpolator(2.5f)
+                interpolator = DecelerateInterpolator(2.2f)
                 start()
             }
         }, 300)
